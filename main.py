@@ -89,6 +89,13 @@ def step(state: State, action: Action):
         return state, 0
 
 
+def generate_all_state_action_pairs():
+    for player_sum in range(1, 22):
+        for dealer_sum in range(1, 11):
+            for action in list(Action):
+                yield (player_sum, dealer_sum), action
+
+
 def sample_action(action_probs):
     return np.random.choice(list(Action), 1, p=action_probs)[0]
 
@@ -104,33 +111,22 @@ def greedy_action(q_sa, s):
         return Action.random()
 
 
-def plot_q_sa(q_sa):
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-
-    X = list(range(1, 11))
-    Y = list(range(1, 22))
-    Z = []
-    for dealer_card in range(1, 11):
-        zs = []
-        for player_sum in range(1, 22):
-            s = (player_sum, dealer_card)
-            a = greedy_action(q_sa, s)
-            v = q_sa.get(s + (a,), 0)
-            zs.append(v)
-        Z.append(zs)
-
-    X, Y = np.meshgrid(X, Y)
-    Z = np.array(Z)
-
-    ax.plot_surface(X, Y, Z.transpose(), color='b')
-    ax.set_xlabel('Dealer Card')
-    ax.set_ylabel('Player Sum')
-    ax.set_zlabel('V*(s)')
-    plt.show()
+def epsilon_greedy_action(q_sa, s, epsilon):
+    a_best = greedy_action(q_sa, s)
+    selection_probs = []
+    for a in list(Action):
+        if a is a_best:
+            selection_probs.append(1 - epsilon + epsilon / len(Action))
+        else:
+            selection_probs.append(epsilon / len(Action))
+    return sample_action(selection_probs)
 
 
-def mc_control(num_episodes=1000000):
+def calculate_epsilon(n_s, s, n0=100):
+    return n0 / (n0 + n_s.get(s, 0))
+
+
+def mc_control(num_episodes=10000):
     q_sa = {}
     p = {}
     n_s = {}
@@ -180,12 +176,142 @@ def mc_control(num_episodes=1000000):
                 else:
                     selection_probs.append(epsilon / len(Action))
             p[s] = selection_probs
+    return q_sa
 
+
+def sarsa_lambda(num_episodes=1000, lamba=0, gamma=1, yield_progress=False):
+    q_sa = {}
+    n_s = {}
+    n_sa = {}
+
+    for n in range(num_episodes):
+        e_sa = {}
+        state = State()
+        s = state.as_tuple()
+        a = epsilon_greedy_action(q_sa, s, calculate_epsilon(n_s, s))
+        while not state.terminal:
+            state, reward = step(state, a)
+            n_s[s] = n_s.get(s, 0) + 1
+
+            s_next = state.as_tuple()
+            a_next = epsilon_greedy_action(q_sa, s_next, calculate_epsilon(n_s, s_next))
+
+            sa = s + (a,)
+            sa_next = s_next + (a_next,)
+            qsa = q_sa.get(sa, 0)
+            qsa_next = q_sa.get(sa_next, 0)
+
+            nsa = n_sa.get(sa, 0) + 1
+            n_sa[sa] = nsa
+
+            delta = reward + gamma * qsa_next - qsa
+            e_sa[sa] = e_sa.get(sa, 0) + 1
+            for (s, a) in generate_all_state_action_pairs():
+                sa = s + (a,)
+                q_sa[sa] = q_sa.get(sa, 0) + (delta * e_sa.get(sa, 0)) / nsa
+                e_sa[sa] = gamma * lamba * e_sa.get(sa, 0)
+
+            s = s_next
+            a = a_next
+
+        if yield_progress:
+            yield n+1, q_sa
+
+    if not yield_progress:
+        yield num_episodes, q_sa
+
+
+def plot_q_sa(q_sa):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    X = list(range(1, 11))
+    Y = list(range(1, 22))
+    Z = []
+    for dealer_card in range(1, 11):
+        zs = []
+        for player_sum in range(1, 22):
+            s = (player_sum, dealer_card)
+            a = greedy_action(q_sa, s)
+            v = q_sa.get(s + (a,), 0)
+            zs.append(v)
+        Z.append(zs)
+
+    X, Y = np.meshgrid(X, Y)
+    Z = np.array(Z)
+
+    ax.plot_surface(X, Y, Z.transpose(), color='b')
+    ax.set_xlabel('Dealer Card')
+    ax.set_ylabel('Player Sum')
+    ax.set_zlabel('V*(s)')
+    plt.show()
+
+
+def part_2():
+    q_sa = mc_control(1000000)
     plot_q_sa(q_sa)
 
 
+def part_3():
+    def mse(pred, base):
+        sum = 0
+        n = 0
+        for (s, a) in generate_all_state_action_pairs():
+            sa = s + (a,)
+            error = pred.get(sa, 0) - base.get(sa, 0)
+            sum += error**2
+            n += 1
+        return sum / n
+
+    mse_xs = []
+    mse_ys = []
+    q_star_sa = mc_control(1000000)
+    for lamba in range(0, 11):
+        for (_, q_sa) in sarsa_lambda(num_episodes=1000, lamba=lamba / 10):
+            mse_xs.append(lamba / 10)
+            mse_ys.append(mse(q_sa, q_star_sa))
+
+    mse_0_xs = []
+    mse_0_ys = []
+    for (n, q_sa) in sarsa_lambda(num_episodes=1000, lamba=0, yield_progress=True):
+        mse_0_xs.append(n)
+        mse_0_ys.append(mse(q_sa, q_star_sa))
+
+    mse_1_xs = []
+    mse_1_ys = []
+    for (n, q_sa) in sarsa_lambda(num_episodes=1000, lamba=1, yield_progress=True):
+        mse_1_xs.append(n)
+        mse_1_ys.append(mse(q_sa, q_star_sa))
+
+    # fig = plt.figure()
+    fig, axarr = plt.subplots(1, 3)
+    ax0 = axarr[0]
+    ax0.plot(mse_xs, mse_ys)
+    ax0.axis([0, 1, 0, 1])
+    ax0.set_xlabel("lambda")
+    ax0.set_ylabel("MSE")
+
+    ax1 = axarr[1]
+    ax1.plot(mse_0_xs, mse_0_ys)
+    ax1.axis([0, 1000, 0, 1])
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("MSE")
+    ax1.set_title("lambda=0")
+
+    ax2 = axarr[2]
+    ax2.plot(mse_1_xs, mse_1_ys)
+    ax2.axis([0, 1000, 0, 1])
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("MSE")
+    ax2.set_title("lambda=1")
+
+    plt.show()
+
+
 def main():
-    mc_control()
+    # part_2()
+    # part_3()
+    pass
 
 
 if __name__ == '__main__':
